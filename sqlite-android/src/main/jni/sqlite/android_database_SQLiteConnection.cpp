@@ -300,9 +300,9 @@ static void nativeRegisterCustomFunction(JNIEnv* env, jclass clazz, jlong connec
 static void nativeRegisterLocalizedCollators(JNIEnv* env, jclass clazz, jlong connectionPtr,
         jstring localeStr) {
     SQLiteConnection* connection = reinterpret_cast<SQLiteConnection*>(connectionPtr);
-
-    const char* locale = env->GetStringUTFChars(localeStr, NULL);
 #if 0
+    const char* locale = env->GetStringUTFChars(localeStr, NULL);
+
     int err = register_localized_collators(connection->db, locale, UTF16_STORAGE);
     env->ReleaseStringUTFChars(localeStr, locale);
 
@@ -824,6 +824,26 @@ static jboolean nativeHasCodec(JNIEnv* env, jobject clazz){
 #endif
 }
 
+static void nativeLoadExtension(JNIEnv* env, jobject clazz,
+                                jlong connectionPtr, jstring file, jstring proc) {
+    SQLiteConnection* connection = reinterpret_cast<SQLiteConnection*>(connectionPtr);
+    int result = sqlite3_enable_load_extension(connection->db, 1);
+    if (result == SQLITE_OK) {
+        const char* fileChars = env->GetStringUTFChars(file, NULL);
+        const char* procChars = NULL;
+        if (proc) {
+            procChars = env->GetStringUTFChars(proc, NULL);
+        }
+        result = sqlite3_load_extension(connection->db, fileChars, procChars, 0);
+        env->ReleaseStringUTFChars(file, fileChars);
+        if (proc) {
+            env->ReleaseStringUTFChars(proc, procChars);
+        }
+    }
+    if (result != SQLITE_OK) {
+        throw_sqlite3_exception_errcode(env, result, "Could not register extension");
+    }
+}
 
 static JNINativeMethod sMethods[] =
 {
@@ -880,21 +900,11 @@ static JNINativeMethod sMethods[] =
             (void*)nativeCancel },
     { "nativeResetCancel", "(JZ)V",
             (void*)nativeResetCancel },
-
-    { "nativeHasCodec", "()Z", (void*)nativeHasCodec },
+    { "nativeHasCodec", "()Z",
+            (void*)nativeHasCodec },
+    { "nativeLoadExtension", "(JLjava/lang/String;Ljava/lang/String;)V",
+            (void*)nativeLoadExtension },
 };
-
-#define FIND_CLASS(var, className) \
-        var = env->FindClass(className); \
-        LOG_FATAL_IF(! var, "Unable to find class " className);
-
-#define GET_METHOD_ID(var, clazz, methodName, fieldDescriptor) \
-        var = env->GetMethodID(clazz, methodName, fieldDescriptor); \
-        LOG_FATAL_IF(! var, "Unable to find method" methodName);
-
-#define GET_FIELD_ID(var, clazz, fieldName, fieldDescriptor) \
-        var = env->GetFieldID(clazz, fieldName, fieldDescriptor); \
-        LOG_FATAL_IF(! var, "Unable to find field " fieldName);
 
 int register_android_database_SQLiteConnection(JNIEnv *env)
 {

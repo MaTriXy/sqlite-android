@@ -215,7 +215,7 @@ public abstract class SQLiteOpenHelper {
             mIsInitializing = true;
 
             if (db != null) {
-                if (writable && db.isReadOnly()) {
+                if (db.isReadOnly()) {
                     db.reopenReadWrite();
                 }
             } else if (mName == null) {
@@ -224,10 +224,16 @@ public abstract class SQLiteOpenHelper {
                 try {
                     final String path = mContext.getDatabasePath(mName).getPath();
                     if (DEBUG_STRICT_READONLY && !writable) {
-                        db = SQLiteDatabase.openDatabase(path, mFactory,
-                                SQLiteDatabase.OPEN_READONLY, mErrorHandler);
+                        SQLiteDatabaseConfiguration configuration =
+                            createConfiguration(path, SQLiteDatabase.OPEN_READONLY);
+                        db = SQLiteDatabase.openDatabase(configuration, mFactory,  mErrorHandler);
                     } else {
-                        db = SQLiteDatabase.openOrCreateDatabase(path, mFactory, mErrorHandler);
+                        int flags = mEnableWriteAheadLogging ?
+                            SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING : 0;
+                        flags |= SQLiteDatabase.CREATE_IF_NECESSARY;
+                        SQLiteDatabaseConfiguration configuration =
+                            createConfiguration(path, flags);
+                        db = SQLiteDatabase.openDatabase(configuration, mFactory, mErrorHandler);
                     }
                 } catch (SQLiteException ex) {
                     if (writable) {
@@ -236,8 +242,9 @@ public abstract class SQLiteOpenHelper {
                     Log.e(TAG, "Couldn't open " + mName
                             + " for writing (will try read-only):", ex);
                     final String path = mContext.getDatabasePath(mName).getPath();
-                    db = SQLiteDatabase.openDatabase(path, mFactory,
-                            SQLiteDatabase.OPEN_READONLY, mErrorHandler);
+                    SQLiteDatabaseConfiguration configuration =
+                        createConfiguration(path, SQLiteDatabase.OPEN_READONLY);
+                    db = SQLiteDatabase.openDatabase(configuration, mFactory, mErrorHandler);
                 }
             }
 
@@ -380,4 +387,18 @@ public abstract class SQLiteOpenHelper {
      * @param db The database.
      */
     public void onOpen(SQLiteDatabase db) {}
+
+    /**
+     * Called before the database is opened. Provides the {@link SQLiteDatabaseConfiguration}
+     * instance that is used to initialize the database. Override this to create a configuration
+     * that has custom functions or extensions.
+     *
+     * @param path to database file to open and/or create
+     * @param openFlags to control database access mode
+     * @return {@link SQLiteDatabaseConfiguration} instance, cannot be null.
+     */
+    protected SQLiteDatabaseConfiguration createConfiguration(String path,
+                                                          @SQLiteDatabase.OpenFlags int openFlags) {
+        return new SQLiteDatabaseConfiguration(path, openFlags);
+    }
 }

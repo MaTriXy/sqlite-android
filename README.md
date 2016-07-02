@@ -45,7 +45,7 @@ Usage
 
 ```gradle
 dependencies {
-    compile 'io.requery:sqlite-android:3.12.0'
+    compile 'io.requery:sqlite-android:3.13.0-3'
 }
 ```
 Then change usages of `android.database.sqlite.SQLiteDatabase` to
@@ -67,6 +67,7 @@ The native library is built for the following CPU architectures:
 - `armeabi-v7a`
 - `arm64-v8a`
 - `x86`
+- `x86_64`
 
 However you may not want to include all binaries in your apk. You can exclude certain variants by
 using `packagingOptions`:
@@ -76,6 +77,7 @@ android {
     packagingOptions {
         exclude 'lib/arm64-v8a/libsqlite3x.so'
         exclude 'lib/x86/libsqlite3x.so'
+        exclude 'lib/x86_64/libsqlite3x.so'
     }
 }
 ```
@@ -84,6 +86,11 @@ The size of the artifacts with only the armeabi-v7a binary is **~500kb**. In gen
 armeabi-v7a on the majority of Android devices including Intel Atom which provides a native
 translation layer, however performance under the translation layer is worse than using the x86
 binary.
+
+Requirements
+------------
+
+The min SDK level is API level 9 (Gingerbread).
 
 Versioning
 ----------
@@ -121,6 +128,7 @@ Changes
 - Fix removed members in AbstractWindowCursor
 - Made the AOSP code (mostly) warning free but still mergable from source
 - Deprecated classes/methods removed
+- Loadable extension support
 
 License
 -------
