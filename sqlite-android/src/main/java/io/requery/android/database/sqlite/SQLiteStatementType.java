@@ -17,7 +17,7 @@
 
 package io.requery.android.database.sqlite;
 
-import java.util.Locale;
+import androidx.annotation.VisibleForTesting;
 
 class SQLiteStatementType {
 
@@ -60,39 +60,87 @@ class SQLiteStatementType {
      * @return one of the values listed above
      */
     public static int getSqlStatementType(String sql) {
-        sql = sql.trim();
         if (sql.length() < 3) {
             return STATEMENT_OTHER;
         }
-        String prefixSql = sql.substring(0, 3).toUpperCase(Locale.US);
-        switch (prefixSql) {
-            case "SEL":
-                return STATEMENT_SELECT;
-            case "INS":
-            case "UPD":
-            case "REP":
-            case "DEL":
-                return STATEMENT_UPDATE;
-            case "ATT":
-                return STATEMENT_ATTACH;
-            case "COM":
-                return STATEMENT_COMMIT;
-            case "END":
-                return STATEMENT_COMMIT;
-            case "ROL":
-                return STATEMENT_ABORT;
-            case "BEG":
-                return STATEMENT_BEGIN;
-            case "PRA":
-                return STATEMENT_PRAGMA;
-            case "CRE":
-            case "DRO":
-            case "ALT":
-                return STATEMENT_DDL;
-            case "ANA":
-            case "DET":
-                return STATEMENT_UNPREPARED;
+        // Skip leading comments to properly recognize the statement type
+        int statementStart = statementStartIndex(sql);
+        String prefixSql = sql.substring(statementStart, Math.min(statementStart + 3, sql.length()));
+
+        if (prefixSql.equalsIgnoreCase("SEL")
+                || prefixSql.equalsIgnoreCase("WIT")) {
+            return STATEMENT_SELECT;
         }
+        if (prefixSql.equalsIgnoreCase("INS")
+                || prefixSql.equalsIgnoreCase("UPD")
+                || prefixSql.equalsIgnoreCase("REP")
+                || prefixSql.equalsIgnoreCase("DEL")) {
+            return STATEMENT_UPDATE;
+        }
+        if (prefixSql.equalsIgnoreCase("ATT")) {
+            return STATEMENT_ATTACH;
+        }
+        if (prefixSql.equalsIgnoreCase("COM")
+                || prefixSql.equalsIgnoreCase("END")) {
+            return STATEMENT_COMMIT;
+        }
+        if (prefixSql.equalsIgnoreCase("ROL")) {
+            return STATEMENT_ABORT;
+        }
+        if (prefixSql.equalsIgnoreCase("BEG")) {
+            return STATEMENT_BEGIN;
+        }
+        if (prefixSql.equalsIgnoreCase("PRA")) {
+            return STATEMENT_PRAGMA;
+        }
+        if (prefixSql.equalsIgnoreCase("CRE")
+                || prefixSql.equalsIgnoreCase("DRO")
+                || prefixSql.equalsIgnoreCase("ALT")) {
+            return STATEMENT_DDL;
+        }
+
+        if (prefixSql.equalsIgnoreCase("ANA") || prefixSql.equalsIgnoreCase("DET")) {
+            return STATEMENT_UNPREPARED;
+        }
+
         return STATEMENT_OTHER;
+    }
+
+    /**
+     * @param sql sql statement to check
+     * @return index of the SQL statement start, skipping leading comments
+     */
+    @VisibleForTesting
+    static int statementStartIndex(String sql) {
+        boolean inSingleLineComment = false;
+        boolean inMultiLineComment = false;
+        int statementStartIndex = 0;
+
+        for (int i = 0; i < sql.length(); i++) {
+            char c = sql.charAt(i);
+
+            if (inSingleLineComment) {
+                if (c == '\n') {
+                    inSingleLineComment = false;
+                }
+            } else if (inMultiLineComment) {
+                if (c == '*' && i + 1 < sql.length() && sql.charAt(i + 1) == '/') {
+                    inMultiLineComment = false;
+                }
+            } else if (c == '-') {
+                if (i + 1 < sql.length() && sql.charAt(i + 1) == '-') {
+                    inSingleLineComment = true;
+                }
+            } else if (c == '/') {
+                if (i + 1 < sql.length() && sql.charAt(i + 1) == '*') {
+                    inMultiLineComment = true;
+                }
+            } else if (c != '\n' && c != '\r' && c != ' ' && c != '\t') {
+                statementStartIndex = i;
+                break;
+            }
+        }
+
+        return statementStartIndex;
     }
 }

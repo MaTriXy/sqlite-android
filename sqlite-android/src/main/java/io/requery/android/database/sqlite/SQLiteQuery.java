@@ -19,9 +19,9 @@ package io.requery.android.database.sqlite;
 
 import android.database.sqlite.SQLiteDatabaseCorruptException;
 import android.database.sqlite.SQLiteException;
-import android.support.v4.os.CancellationSignal;
-import android.support.v4.os.OperationCanceledException;
 import android.util.Log;
+import androidx.core.os.CancellationSignal;
+import androidx.core.os.OperationCanceledException;
 import io.requery.android.database.CursorWindow;
 
 /**
@@ -36,8 +36,9 @@ public final class SQLiteQuery extends SQLiteProgram {
 
     private final CancellationSignal mCancellationSignal;
 
-    SQLiteQuery(SQLiteDatabase db, String query, CancellationSignal cancellationSignal) {
-        super(db, query, null, cancellationSignal);
+    SQLiteQuery(SQLiteDatabase db, String query, Object[] bindArgs,
+                CancellationSignal cancellationSignal) {
+        super(db, query, bindArgs, cancellationSignal);
         mCancellationSignal = cancellationSignal;
     }
 

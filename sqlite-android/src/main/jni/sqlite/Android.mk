@@ -17,11 +17,21 @@ sqlite_flags := \
 	-DSQLITE_DEFAULT_AUTOVACUUM=1 \
 	-DSQLITE_ENABLE_MEMORY_MANAGEMENT=1 \
 	-DSQLITE_ENABLE_FTS3 \
+	-DSQLITE_ENABLE_FTS3_PARENTHESIS \
 	-DSQLITE_ENABLE_FTS4 \
+    -DSQLITE_ENABLE_FTS4_PARENTHESIS \
+    -DSQLITE_ENABLE_FTS5 \
+    -DSQLITE_ENABLE_FTS5_PARENTHESIS \
 	-DSQLITE_ENABLE_JSON1 \
-	-DSQLITE_OMIT_BUILTIN_TEST \
+	-DSQLITE_ENABLE_RTREE=1 \
+	-DSQLITE_UNTESTABLE \
 	-DSQLITE_OMIT_COMPILEOPTION_DIAGS \
-	-DSQLITE_DEFAULT_FILE_PERMISSIONS=0600
+	-DSQLITE_DEFAULT_FILE_PERMISSIONS=0600 \
+    -DSQLITE_DEFAULT_MEMSTATUS=0 \
+    -DSQLITE_MAX_EXPR_DEPTH=0 \
+    -DSQLITE_USE_ALLOCA \
+    -DSQLITE_ENABLE_BATCH_ATOMIC_WRITE \
+    -O3
 
 LOCAL_CFLAGS += $(sqlite_flags)
 LOCAL_CFLAGS += -Wno-unused-parameter -Wno-int-to-pointer-cast
@@ -38,6 +48,7 @@ endif
 LOCAL_SRC_FILES:= \
 	android_database_SQLiteCommon.cpp \
 	android_database_SQLiteConnection.cpp \
+	android_database_SQLiteFunction.cpp \
 	android_database_SQLiteGlobal.cpp \
 	android_database_SQLiteDebug.cpp \
 	android_database_CursorWindow.cpp \
@@ -50,7 +61,7 @@ LOCAL_SRC_FILES += sqlite3.c
 LOCAL_C_INCLUDES += $(LOCAL_PATH)
 
 LOCAL_MODULE:= libsqlite3x
-LOCAL_LDLIBS += -ldl -llog 
+LOCAL_LDLIBS += -ldl -llog -latomic
 
 include $(BUILD_SHARED_LIBRARY)
 

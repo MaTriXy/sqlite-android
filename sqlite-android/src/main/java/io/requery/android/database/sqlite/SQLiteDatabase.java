@@ -15,7 +15,7 @@
  */
 // modified from original source see README at the top level of this project
 /*
-** Modified to support SQLite extensions by the SQLite developers: 
+** Modified to support SQLite extensions by the SQLite developers:
 ** sqlite-dev@sqlite.org.
 */
 
@@ -28,15 +28,22 @@ import android.database.SQLException;
 import android.database.sqlite.SQLiteDatabaseCorruptException;
 import android.database.sqlite.SQLiteException;
 import android.database.sqlite.SQLiteTransactionListener;
+import android.os.Build;
 import android.os.Looper;
-import android.support.annotation.IntDef;
-import android.support.v4.os.CancellationSignal;
-import android.support.v4.os.OperationCanceledException;
+import android.os.ParcelFileDescriptor;
 import android.text.TextUtils;
 import android.util.EventLog;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Printer;
+import androidx.annotation.IntDef;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
+import androidx.core.os.CancellationSignal;
+import androidx.core.os.OperationCanceledException;
+import androidx.sqlite.db.SupportSQLiteDatabase;
+import androidx.sqlite.db.SupportSQLiteQuery;
 import io.requery.android.database.DatabaseErrorHandler;
 import io.requery.android.database.DefaultDatabaseErrorHandler;
 
@@ -74,10 +81,14 @@ import java.util.WeakHashMap;
  */
 @SuppressWarnings({"unused", "JavaDoc", "TryFinallyCanBeTryWithResources"})
 @SuppressLint("ShiftFlags") // suppressed for readability with native code
-public final class SQLiteDatabase extends SQLiteClosable {
+public final class SQLiteDatabase extends SQLiteClosable implements SupportSQLiteDatabase {
 
+    /**
+     * Name of the compiled native library.
+     */
+    public static final String LIBRARY_NAME = "sqlite3x";
     static {
-        System.loadLibrary("sqlite3x");
+        System.loadLibrary(LIBRARY_NAME);
     }
 
     private static final String TAG = "SQLiteDatabase";
@@ -136,10 +147,6 @@ public final class SQLiteDatabase extends SQLiteClosable {
     // when the lock is held.
     // INVARIANT: Guarded by mLock.
     private SQLiteConnectionPool mConnectionPoolLocked;
-
-    // True if the database has attached databases.
-    // INVARIANT: Guarded by mLock.
-    private boolean mHasAttachedDbsLocked;
 
     /**
      * When a constraint violation occurs, an immediate ROLLBACK occurs,
@@ -209,70 +216,48 @@ public final class SQLiteDatabase extends SQLiteClosable {
     private static final String[] CONFLICT_VALUES = new String[]
             {"", " OR ROLLBACK ", " OR ABORT ", " OR FAIL ", " OR IGNORE ", " OR REPLACE "};
 
-    /**
-     * Maximum Length Of A LIKE Or GLOB Pattern
-     * The pattern matching algorithm used in the default LIKE and GLOB implementation
-     * of SQLite can exhibit O(N^2) performance (where N is the number of characters in
-     * the pattern) for certain pathological cases. To avoid denial-of-service attacks
-     * the length of the LIKE or GLOB pattern is limited to SQLITE_MAX_LIKE_PATTERN_LENGTH bytes.
-     * The default value of this limit is 50000. A modern workstation can evaluate
-     * even a pathological LIKE or GLOB pattern of 50000 bytes relatively quickly.
-     * The denial of service problem only comes into play when the pattern length gets
-     * into millions of bytes. Nevertheless, since most useful LIKE or GLOB patterns
-     * are at most a few dozen bytes in length, paranoid application developers may
-     * want to reduce this parameter to something in the range of a few hundred
-     * if they know that external users are able to generate arbitrary patterns.
-     */
-    public static final int SQLITE_MAX_LIKE_PATTERN_LENGTH = 50000;
+    /** Open flag to open in the database in read only mode */
+    public static final int OPEN_READONLY         = 0x00000001;
 
-    /**
-     * Open flag: Flag for {@link #openDatabase} to open the database for reading and writing.
-     * If the disk is full, this may fail even before you actually write anything.
-     *
-     * {@more} Note that the value of this flag is 0, so it is the default.
-     */
-    public static final int OPEN_READWRITE = 0x00000000;          // update native code if changing
+    /** Open flag to open in the database in read/write mode */
+    public static final int OPEN_READWRITE        = 0x00000002;
 
-    /**
-     * Open flag: Flag for {@link #openDatabase} to open the database for reading only.
-     * This is the only reliable way to open a database if the disk may be full.
-     */
-    public static final int OPEN_READONLY = 0x00000001;           // update native code if changing
+    /** Open flag to create the database if it does not exist */
+    public static final int OPEN_CREATE           = 0x00000004;
 
-    /**
-     * Open flag: Flag for {@link #openDatabase} to open the database without support for
-     * localized collators.
-     *
-     * {@more} This causes the collator <code>LOCALIZED</code> not to be created.
-     * You must be consistent when using this flag to use the setting the database was
-     * created with.  If this is set, {@link #setLocale} will do nothing.
-     */
-    public static final int NO_LOCALIZED_COLLATORS = 0x00000010;  // update native code if changing
+    /** Open flag to support URI filenames */
+    public static final int OPEN_URI              = 0x00000040;
 
-    /**
-     * Open flag: Flag for {@link #openDatabase} to create the database file if it does not
-     * already exist.
-     */
-    public static final int CREATE_IF_NECESSARY = 0x10000000;     // update native code if changing
+    /** Open flag opens the database in multi-thread threading mode */
+    public static final int OPEN_NOMUTEX          = 0x00008000;
 
-    /**
-     * Open flag: Flag for {@link #openDatabase} to open the database file with
-     * write-ahead logging enabled by default.  Using this flag is more efficient
-     * than calling {@link #enableWriteAheadLogging}.
-     *
-     * Write-ahead logging cannot be used with read-only databases so the value of
-     * this flag is ignored if the database is opened read-only.
-     *
-     * @see #enableWriteAheadLogging
-     */
+    /** Open flag opens the database in serialized threading mode */
+    public static final int OPEN_FULLMUTEX        = 0x00010000;
+
+    /** Open flag opens the database in shared cache mode */
+    public static final int OPEN_SHAREDCACHE      = 0x00020000;
+
+    /** Open flag opens the database in private cache mode */
+    public static final int OPEN_PRIVATECACHE     = 0x00040000;
+
+    /** Open flag equivalent to {@link #OPEN_READWRITE} | {@link #OPEN_CREATE} */
+    public static final int CREATE_IF_NECESSARY = OPEN_READWRITE | OPEN_CREATE;
+
+    /** Open flag to enable write-ahead logging */ // custom flag remove for sqlite3_open_v2
     public static final int ENABLE_WRITE_AHEAD_LOGGING = 0x20000000;
 
     /** Integer flag definition for the database open options */
+    @SuppressLint("UniqueConstants") // duplicate values provided for compatibility
     @IntDef(flag = true, value = {
         OPEN_READONLY,
         OPEN_READWRITE,
+        OPEN_CREATE,
+        OPEN_URI,
+        OPEN_NOMUTEX,
+        OPEN_FULLMUTEX,
+        OPEN_SHAREDCACHE,
+        OPEN_PRIVATECACHE,
         CREATE_IF_NECESSARY,
-        NO_LOCALIZED_COLLATORS,
         ENABLE_WRITE_AHEAD_LOGGING})
     @Retention(RetentionPolicy.SOURCE)
     public @interface OpenFlags {
@@ -436,6 +421,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *   }
      * </pre>
      */
+    @Override
     public void beginTransaction() {
         beginTransaction(null, SQLiteSession.TRANSACTION_MODE_EXCLUSIVE);
     }
@@ -460,6 +446,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *   }
      * </pre>
      */
+    @Override
     public void beginTransactionNonExclusive() {
         beginTransaction(null, SQLiteSession.TRANSACTION_MODE_IMMEDIATE);
     }
@@ -508,6 +495,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * commits, or is rolled back, either explicitly or by a call to
      * {@link #yieldIfContendedSafely}.
      */
+    @Override
     public void beginTransactionWithListener(SQLiteTransactionListener transactionListener) {
         beginTransaction(transactionListener, SQLiteSession.TRANSACTION_MODE_EXCLUSIVE);
     }
@@ -536,6 +524,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *            transaction begins, commits, or is rolled back, either
      *            explicitly or by a call to {@link #yieldIfContendedSafely}.
      */
+    @Override
     public void beginTransactionWithListenerNonExclusive(
             SQLiteTransactionListener transactionListener) {
         beginTransaction(transactionListener, SQLiteSession.TRANSACTION_MODE_IMMEDIATE);
@@ -555,6 +544,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * End a transaction. See beginTransaction for notes about how to use this and when transactions
      * are committed and rolled back.
      */
+    @Override
     public void endTransaction() {
         acquireReference();
         try {
@@ -573,6 +563,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @throws IllegalStateException if the current thread is not in a transaction or the
      * transaction is already marked as successful.
      */
+    @Override
     public void setTransactionSuccessful() {
         acquireReference();
         try {
@@ -587,6 +578,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *
      * @return True if the current thread is in a transaction.
      */
+    @Override
     public boolean inTransaction() {
         acquireReference();
         try {
@@ -608,6 +600,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *
      * @return True if the current thread is holding an active connection to the database.
      */
+    @Override
     public boolean isDbLockedByCurrentThread() {
         acquireReference();
         try {
@@ -625,6 +618,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * throw an exception if that is not the case.
      * @return true if the transaction was yielded
      */
+    @Override
     public boolean yieldIfContendedSafely() {
         return yieldIfContendedHelper(true /* check yielding */, -1 /* sleepAfterYieldDelay*/);
     }
@@ -640,6 +634,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *   more progress than they would if we started the transaction immediately.
      * @return true if the transaction was yielded
      */
+    @Override
     public boolean yieldIfContendedSafely(long sleepAfterYieldDelay) {
         return yieldIfContendedHelper(true /* check yielding */, sleepAfterYieldDelay);
     }
@@ -654,8 +649,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
     }
 
     /**
-     * Open the database according to the flags {@link #OPEN_READWRITE}
-     * {@link #OPEN_READONLY} {@link #CREATE_IF_NECESSARY} and/or {@link #NO_LOCALIZED_COLLATORS}.
+     * Open the database according to the flags {@link OpenFlags}
      *
      * <p>Sets the locale of the database to the  the system's current locale.
      * Call {@link #setLocale} if you would like something else.</p>
@@ -674,8 +668,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
     }
 
     /**
-     * Open the database according to the flags {@link #OPEN_READWRITE}
-     * {@link #OPEN_READONLY} {@link #CREATE_IF_NECESSARY} and/or {@link #NO_LOCALIZED_COLLATORS}.
+     * Open the database according to the flags {@link OpenFlags}
      *
      * <p>Sets the locale of the database to the  the system's current locale.
      * Call {@link #setLocale} if you would like something else.</p>
@@ -703,8 +696,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
     }
 
     /**
-     * Open the database according to the flags {@link #OPEN_READWRITE}
-     * {@link #OPEN_READONLY} {@link #CREATE_IF_NECESSARY} and/or {@link #NO_LOCALIZED_COLLATORS}.
+     * Open the database according to the given configuration.
      *
      * <p>Sets the locale of the database to the  the system's current locale.
      * Call {@link #setLocale} if you would like something else.</p>
@@ -817,7 +809,8 @@ public final class SQLiteDatabase extends SQLiteClosable {
 
     private void open() {
         try {
-            if (!mConfigurationLocked.isInMemoryDb()) {
+            if (!mConfigurationLocked.isInMemoryDb()
+                    && (mConfigurationLocked.openFlags & OPEN_CREATE) != 0) {
                 ensureFile(mConfigurationLocked.path);
             }
             try {
@@ -837,7 +830,9 @@ public final class SQLiteDatabase extends SQLiteClosable {
         File file = new File(path);
         if (!file.exists()) {
             try {
-                if (!file.getParentFile().mkdirs()) {
+                if (!file.getParentFile().exists() && !file.getParentFile().mkdirs()) {
+                    // Fixes #103: Check parent directory's existence before
+                    // attempting to create.
                     Log.e(TAG, "Couldn't mkdirs " + file);
                 }
                 if (!file.createNewFile()) {
@@ -887,6 +882,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @param function callback to call when the function is executed
      * @hide
      */
+    @Deprecated
     public void addCustomFunction(String name, int numArgs, CustomFunction function) {
         // Create wrapper (also validates arguments).
         SQLiteCustomFunction wrapper = new SQLiteCustomFunction(name, numArgs, function);
@@ -905,12 +901,68 @@ public final class SQLiteDatabase extends SQLiteClosable {
     }
 
     /**
+     * Registers a Function callback as a function that can be called from
+     * SQLite database triggers.
+     *
+     * @param name the name of the sqlite3 function
+     * @param numArgs the number of arguments for the function
+     * @param function callback to call when the function is executed
+     * @hide
+     */
+    public void addFunction(String name, int numArgs, Function function) {
+        addFunction(name, numArgs, function, 0);
+    }
+
+    /**
+     * Registers a Function callback as a function that can be called from
+     * SQLite database triggers.
+     *
+     * @param name the name of the sqlite3 function
+     * @param numArgs the number of arguments for the function
+     * @param function callback to call when the function is executed
+     * @param flags 
+     * @hide
+     */
+    public void addFunction(String name, int numArgs, Function function, int flags) {
+        // Create wrapper (also validates arguments).
+        SQLiteFunction wrapper = new SQLiteFunction(name, numArgs, function, flags);
+
+        synchronized (mLock) {
+            throwIfNotOpenLocked();
+
+            mConfigurationLocked.functions.add(wrapper);
+            try {
+                mConnectionPoolLocked.reconfigure(mConfigurationLocked);
+            } catch (RuntimeException ex) {
+                mConfigurationLocked.functions.remove(wrapper);
+                throw ex;
+            }
+        }
+    }
+
+    public void setUpdateHook(SQLiteUpdateHook updateHook) {
+        synchronized (mLock) {
+            throwIfNotOpenLocked();
+
+            mConfigurationLocked.sqliteUpdateHook = updateHook;
+
+            try {
+                mConnectionPoolLocked.reconfigure(mConfigurationLocked);
+            } catch (RuntimeException ex) {
+                mConfigurationLocked.sqliteUpdateHook = null;
+                throw ex;
+            }
+        }
+    }
+
+    /**
      * Gets the database version.
      *
      * @return the database version
      */
+    @Override
     public int getVersion() {
-        return ((Long) longForQuery(this, "PRAGMA user_version;", null)).intValue();
+        return ((Long) longForQuery("PRAGMA user_version;", null)).intValue();
     }
 
     /**
@@ -918,6 +970,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *
      * @param version the new database version
      */
+    @Override
     public void setVersion(int version) {
         execSQL("PRAGMA user_version = " + version);
     }
@@ -927,8 +980,9 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *
      * @return the new maximum database size
      */
+    @Override
     public long getMaximumSize() {
-        long pageCount = longForQuery(this, "PRAGMA max_page_count;", null);
+        long pageCount = longForQuery("PRAGMA max_page_count;", null);
         return pageCount * getPageSize();
     }
 
@@ -939,6 +993,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @param numBytes the maximum database size, in bytes
      * @return the new maximum database size
      */
+    @Override
     public long setMaximumSize(long numBytes) {
         long pageSize = getPageSize();
         long numPages = numBytes / pageSize;
@@ -946,8 +1001,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
         if ((numBytes % pageSize) != 0) {
             numPages++;
         }
-        long newPageCount = longForQuery(this, "PRAGMA max_page_count = " + numPages,
-                null);
+        long newPageCount = longForQuery("PRAGMA max_page_count = " + numPages, null);
         return newPageCount * pageSize;
     }
 
@@ -956,8 +1010,9 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *
      * @return the database page size, in bytes
      */
+    @Override
     public long getPageSize() {
-        return longForQuery(this, "PRAGMA page_size;", null);
+        return longForQuery("PRAGMA page_size;", null);
     }
 
     /**
@@ -967,6 +1022,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *
      * @param numBytes the database page size, in bytes
      */
+    @Override
     public void setPageSize(long numBytes) {
         execSQL("PRAGMA page_size = " + numBytes);
     }
@@ -1008,6 +1064,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @return A pre-compiled {@link SQLiteStatement} object. Note that
      * {@link SQLiteStatement}s are not synchronized, see the documentation for more details.
      */
+    @Override
     public SQLiteStatement compileStatement(String sql) throws SQLException {
         acquireReference();
         try {
@@ -1030,7 +1087,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *            will return all rows for the given table.
      * @param selectionArgs You may include ?s in selection, which will be
      *         replaced by the values from selectionArgs, in order that they
-     *         appear in the selection. The values will be bound as Strings.
+     *         appear in the selection.
      * @param groupBy A filter declaring how to group rows, formatted as an SQL
      *            GROUP BY clause (excluding the GROUP BY itself). Passing null
      *            will cause the rows to not be grouped.
@@ -1049,7 +1106,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @see Cursor
      */
     public Cursor query(boolean distinct, String table, String[] columns,
-            String selection, String[] selectionArgs, String groupBy,
+            String selection, Object[] selectionArgs, String groupBy,
             String having, String orderBy, String limit) {
         return queryWithFactory(null, distinct, table, columns, selection, selectionArgs,
                 groupBy, having, orderBy, limit, null);
@@ -1068,7 +1125,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *            will return all rows for the given table.
      * @param selectionArgs You may include ?s in selection, which will be
      *         replaced by the values from selectionArgs, in order that they
-     *         appear in the selection. The values will be bound as Strings.
+     *         appear in the selection.
      * @param groupBy A filter declaring how to group rows, formatted as an SQL
      *            GROUP BY clause (excluding the GROUP BY itself). Passing null
      *            will cause the rows to not be grouped.
@@ -1090,7 +1147,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @see Cursor
      */
     public Cursor query(boolean distinct, String table, String[] columns,
-            String selection, String[] selectionArgs, String groupBy,
+            String selection, Object[] selectionArgs, String groupBy,
             String having, String orderBy, String limit, CancellationSignal cancellationSignal) {
         return queryWithFactory(null, distinct, table, columns, selection, selectionArgs,
                 groupBy, having, orderBy, limit, cancellationSignal);
@@ -1110,7 +1167,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *            will return all rows for the given table.
      * @param selectionArgs You may include ?s in selection, which will be
      *         replaced by the values from selectionArgs, in order that they
-     *         appear in the selection. The values will be bound as Strings.
+     *         appear in the selection.
      * @param groupBy A filter declaring how to group rows, formatted as an SQL
      *            GROUP BY clause (excluding the GROUP BY itself). Passing null
      *            will cause the rows to not be grouped.
@@ -1130,7 +1187,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      */
     public Cursor queryWithFactory(CursorFactory cursorFactory,
             boolean distinct, String table, String[] columns,
-            String selection, String[] selectionArgs, String groupBy,
+            String selection, Object[] selectionArgs, String groupBy,
             String having, String orderBy, String limit) {
         return queryWithFactory(cursorFactory, distinct, table, columns, selection,
                 selectionArgs, groupBy, having, orderBy, limit, null);
@@ -1150,7 +1207,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *            will return all rows for the given table.
      * @param selectionArgs You may include ?s in selection, which will be
      *         replaced by the values from selectionArgs, in order that they
-     *         appear in the selection. The values will be bound as Strings.
+     *         appear in the selection.
      * @param groupBy A filter declaring how to group rows, formatted as an SQL
      *            GROUP BY clause (excluding the GROUP BY itself). Passing null
      *            will cause the rows to not be grouped.
@@ -1173,7 +1230,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      */
     public Cursor queryWithFactory(CursorFactory cursorFactory,
             boolean distinct, String table, String[] columns,
-            String selection, String[] selectionArgs, String groupBy,
+            String selection, Object[] selectionArgs, String groupBy,
             String having, String orderBy, String limit, CancellationSignal cancellationSignal) {
         acquireReference();
         try {
@@ -1199,7 +1256,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *            will return all rows for the given table.
      * @param selectionArgs You may include ?s in selection, which will be
      *         replaced by the values from selectionArgs, in order that they
-     *         appear in the selection. The values will be bound as Strings.
+     *         appear in the selection.
      * @param groupBy A filter declaring how to group rows, formatted as an SQL
      *            GROUP BY clause (excluding the GROUP BY itself). Passing null
      *            will cause the rows to not be grouped.
@@ -1216,7 +1273,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @see Cursor
      */
     public Cursor query(String table, String[] columns, String selection,
-            String[] selectionArgs, String groupBy, String having,
+            Object[] selectionArgs, String groupBy, String having,
             String orderBy) {
 
         return query(false, table, columns, selection, selectionArgs, groupBy,
@@ -1235,7 +1292,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *            will return all rows for the given table.
      * @param selectionArgs You may include ?s in selection, which will be
      *         replaced by the values from selectionArgs, in order that they
-     *         appear in the selection. The values will be bound as Strings.
+     *         appear in the selection.
      * @param groupBy A filter declaring how to group rows, formatted as an SQL
      *            GROUP BY clause (excluding the GROUP BY itself). Passing null
      *            will cause the rows to not be grouped.
@@ -1254,7 +1311,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @see Cursor
      */
     public Cursor query(String table, String[] columns, String selection,
-            String[] selectionArgs, String groupBy, String having,
+            Object[] selectionArgs, String groupBy, String having,
             String orderBy, String limit) {
 
         return query(false, table, columns, selection, selectionArgs, groupBy,
@@ -1264,14 +1321,103 @@ public final class SQLiteDatabase extends SQLiteClosable {
     /**
      * Runs the provided SQL and returns a {@link Cursor} over the result set.
      *
-     * @param sql the SQL query. The SQL string must not be ; terminated
-     * @param selectionArgs You may include ?s in where clause in the query,
-     *     which will be replaced by the values from selectionArgs. The
-     *     values will be bound as Strings.
+     * @param query the SQL query. The SQL string must not be ; terminated
      * @return A {@link Cursor} object, which is positioned before the first entry. Note that
      * {@link Cursor}s are not synchronized, see the documentation for more details.
      */
-    public Cursor rawQuery(String sql, String[] selectionArgs) {
+    @Override
+    public Cursor query(String query) {
+        return rawQueryWithFactory(null, query, null, null, null);
+    }
+
+    /**
+     * Runs the provided SQL and returns a {@link Cursor} over the result set.
+     *
+     * @param query the SQL query. The SQL string must not be ; terminated
+     * @param selectionArgs You may include ?s in where clause in the query,
+     *     which will be replaced by the values from selectionArgs.
+     * @return A {@link Cursor} object, which is positioned before the first entry. Note that
+     * {@link Cursor}s are not synchronized, see the documentation for more details.
+     */
+    @Override
+    public Cursor query(String query, Object[] selectionArgs) {
+        return rawQueryWithFactory(null, query, selectionArgs, null, null);
+    }
+
+    /**
+     * Runs the provided SQL and returns a {@link Cursor} over the result set.
+     *
+     * @param supportQuery the SQL query.
+     * @return A {@link Cursor} object, which is positioned before the first entry. Note that
+     * {@link Cursor}s are not synchronized, see the documentation for more details.
+     */
+    @Override
+    public Cursor query(final SupportSQLiteQuery supportQuery) {
+        return query(supportQuery, (CancellationSignal) null);
+    }
+
+    /**
+     * Runs the provided SQL and returns a {@link Cursor} over the result set.
+     *
+     * @param supportQuery the SQL query. The SQL string must not be ; terminated
+     * @param signal A signal to cancel the operation in progress, or null if none.
+     * If the operation is canceled, then {@link OperationCanceledException} will be thrown
+     * when the query is executed.
+     * @return A {@link Cursor} object, which is positioned before the first entry. Note that
+     * {@link Cursor}s are not synchronized, see the documentation for more details.
+     */
+    @Override
+    @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN)
+    public Cursor query(SupportSQLiteQuery supportQuery, android.os.CancellationSignal signal) {
+        if (signal != null) {
+            final CancellationSignal supportCancellationSignal = new CancellationSignal();
+            signal.setOnCancelListener(new android.os.CancellationSignal.OnCancelListener() {
+                @Override
+                public void onCancel() {
+                    supportCancellationSignal.cancel();
+                }
+            });
+            return query(supportQuery, supportCancellationSignal);
+        } else {
+            return query(supportQuery, (CancellationSignal) null);
+        }
+    }
+
+    /**
+     * Runs the provided SQL and returns a {@link Cursor} over the result set.
+     *
+     * @param supportQuery the SQL query. The SQL string must not be ; terminated
+     * @param signal A signal to cancel the operation in progress, or null if none.
+     * If the operation is canceled, then {@link OperationCanceledException} will be thrown
+     * when the query is executed.
+     * @return A {@link Cursor} object, which is positioned before the first entry. Note that
+     * {@link Cursor}s are not synchronized, see the documentation for more details.
+     */
+    public Cursor query(final SupportSQLiteQuery supportQuery, CancellationSignal signal) {
+        return rawQueryWithFactory(new CursorFactory() {
+            @Override
+            public Cursor newCursor(SQLiteDatabase db, SQLiteCursorDriver masterQuery,
+                                    String editTable, SQLiteQuery query) {
+                supportQuery.bindTo(query);
+                if (mCursorFactory == null) {
+                    return new SQLiteCursor(masterQuery, editTable, query);
+                } else {
+                    return mCursorFactory.newCursor(db, masterQuery, editTable, query);
+                }
+            }
+        }, supportQuery.getSql(), new String[0], null, signal);
+    }
+
+    /**
+     * Runs the provided SQL and returns a {@link Cursor} over the result set.
+     *
+     * @param sql the SQL query. The SQL string must not be ; terminated
+     * @param selectionArgs You may include ?s in where clause in the query,
+     *     which will be replaced by the values from selectionArgs.
+     * @return A {@link Cursor} object, which is positioned before the first entry. Note that
+     * {@link Cursor}s are not synchronized, see the documentation for more details.
+     */
+    public Cursor rawQuery(String sql, Object[] selectionArgs) {
         return rawQueryWithFactory(null, sql, selectionArgs, null, null);
     }
 
@@ -1280,15 +1426,14 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *
      * @param sql the SQL query. The SQL string must not be ; terminated
      * @param selectionArgs You may include ?s in where clause in the query,
-     *     which will be replaced by the values from selectionArgs. The
-     *     values will be bound as Strings.
+     *     which will be replaced by the values from selectionArgs.
      * @param cancellationSignal A signal to cancel the operation in progress, or null if none.
      * If the operation is canceled, then {@link OperationCanceledException} will be thrown
      * when the query is executed.
      * @return A {@link Cursor} object, which is positioned before the first entry. Note that
      * {@link Cursor}s are not synchronized, see the documentation for more details.
      */
-    public Cursor rawQuery(String sql, String[] selectionArgs,
+    public Cursor rawQuery(String sql, Object[] selectionArgs,
             CancellationSignal cancellationSignal) {
         return rawQueryWithFactory(null, sql, selectionArgs, null, cancellationSignal);
     }
@@ -1299,14 +1444,13 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @param cursorFactory the cursor factory to use, or null for the default factory
      * @param sql the SQL query. The SQL string must not be ; terminated
      * @param selectionArgs You may include ?s in where clause in the query,
-     *     which will be replaced by the values from selectionArgs. The
-     *     values will be bound as Strings.
+     *     which will be replaced by the values from selectionArgs.
      * @param editTable the name of the first table, which is editable
      * @return A {@link Cursor} object, which is positioned before the first entry. Note that
      * {@link Cursor}s are not synchronized, see the documentation for more details.
      */
     public Cursor rawQueryWithFactory(
-            CursorFactory cursorFactory, String sql, String[] selectionArgs,
+            CursorFactory cursorFactory, String sql, Object[] selectionArgs,
             String editTable) {
         return rawQueryWithFactory(cursorFactory, sql, selectionArgs, editTable, null);
     }
@@ -1317,8 +1461,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @param cursorFactory the cursor factory to use, or null for the default factory
      * @param sql the SQL query. The SQL string must not be ; terminated
      * @param selectionArgs You may include ?s in where clause in the query,
-     *     which will be replaced by the values from selectionArgs. The
-     *     values will be bound as Strings.
+     *     which will be replaced by the values from selectionArgs.
      * @param editTable the name of the first table, which is editable
      * @param cancellationSignal A signal to cancel the operation in progress, or null if none.
      * If the operation is canceled, then {@link OperationCanceledException} will be thrown
@@ -1327,7 +1470,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * {@link Cursor}s are not synchronized, see the documentation for more details.
      */
     public Cursor rawQueryWithFactory(
-            CursorFactory cursorFactory, String sql, String[] selectionArgs,
+            CursorFactory cursorFactory, String sql, Object[] selectionArgs,
             String editTable, CancellationSignal cancellationSignal) {
         acquireReference();
         try {
@@ -1438,6 +1581,25 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * General method for inserting a row into the database.
      *
      * @param table the table to insert the row into
+     * @param conflictAlgorithm for insert conflict resolver
+     * @param values this map contains the initial column values for the
+     *            row. The keys should be the column names and the values the
+     *            column values
+     * @return the row ID of the newly inserted row
+     * OR the primary key of the existing row if the input param 'conflictAlgorithm' =
+     * {@link #CONFLICT_IGNORE}
+     * OR -1 if any error
+     */
+    @Override
+    public long insert(String table, @ConflictAlgorithm int conflictAlgorithm,
+           ContentValues values) throws SQLException {
+        return insertWithOnConflict(table, null, values, conflictAlgorithm);
+    }
+
+    /**
+     * General method for inserting a row into the database.
+     *
+     * @param table the table to insert the row into
      * @param nullColumnHack optional; may be <code>null</code>.
      *            SQL doesn't allow inserting a completely empty row without
      *            naming at least one column name.  If your provided <code>initialValues</code> is
@@ -1527,6 +1689,35 @@ public final class SQLiteDatabase extends SQLiteClosable {
     }
 
     /**
+     * Convenience method for deleting rows in the database.
+     *
+     * @param table the table to delete from
+     * @param whereClause the optional WHERE clause to apply when deleting.
+     *            Passing null will delete all rows.
+     * @param whereArgs You may include ?s in the where clause, which
+     *            will be replaced by the values from whereArgs. The values
+     *            will be bound as Strings.
+     * @return the number of rows affected if a whereClause is passed in, 0
+     *         otherwise. To remove all rows and get a count pass "1" as the
+     *         whereClause.
+     */
+    @Override
+    public int delete(String table, String whereClause, Object[] whereArgs) {
+        acquireReference();
+        try {
+            SQLiteStatement statement =  new SQLiteStatement(this, "DELETE FROM " + table +
+                    (!TextUtils.isEmpty(whereClause) ? " WHERE " + whereClause : ""), whereArgs);
+            try {
+                return statement.executeUpdateDelete();
+            } finally {
+                statement.close();
+            }
+        } finally {
+            releaseReference();
+        }
+    }
+
+    /**
      * Convenience method for updating rows in the database.
      *
      * @param table the table to update in
@@ -1541,6 +1732,67 @@ public final class SQLiteDatabase extends SQLiteClosable {
      */
     public int update(String table, ContentValues values, String whereClause, String[] whereArgs) {
         return updateWithOnConflict(table, values, whereClause, whereArgs, CONFLICT_NONE);
+    }
+
+    /**
+     * Convenience method for updating rows in the database.
+     *
+     * @param table the table to update in
+     * @param values a map from column names to new column values. null is a
+     *            valid value that will be translated to NULL.
+     * @param whereClause the optional WHERE clause to apply when updating.
+     *            Passing null will update all rows.
+     * @param whereArgs You may include ?s in the where clause, which
+     *            will be replaced by the values from whereArgs. The values
+     *            will be bound as Strings.
+     * @param conflictAlgorithm for update conflict resolver
+     * @return the number of rows affected
+     */
+    @Override
+    public int update(String table, @ConflictAlgorithm int conflictAlgorithm, ContentValues values,
+                      String whereClause,  Object[] whereArgs) {
+        if (values == null || values.size() == 0) {
+            throw new IllegalArgumentException("Empty values");
+        }
+
+        acquireReference();
+        try {
+            StringBuilder sql = new StringBuilder(120);
+            sql.append("UPDATE ");
+            sql.append(CONFLICT_VALUES[conflictAlgorithm]);
+            sql.append(table);
+            sql.append(" SET ");
+
+            // move all bind args to one array
+            int setValuesSize = values.size();
+            int bindArgsSize = (whereArgs == null) ? setValuesSize : (setValuesSize + whereArgs.length);
+            Object[] bindArgs = new Object[bindArgsSize];
+            int i = 0;
+            for (Map.Entry<String, Object> entry : values.valueSet()) {
+                sql.append((i > 0) ? "," : "");
+                sql.append(entry.getKey());
+                bindArgs[i++] = entry.getValue();
+                sql.append("=?");
+            }
+            if (whereArgs != null) {
+                for (i = setValuesSize; i < bindArgsSize; i++) {
+                    bindArgs[i] = whereArgs[i - setValuesSize];
+                }
+            }
+            if (!TextUtils.isEmpty(whereClause)) {
+                sql.append(" WHERE ");
+                sql.append(whereClause);
+            }
+
+            SQLiteStatement statement = new SQLiteStatement(this, sql.toString(), bindArgs);
+            try {
+                return statement.executeUpdateDelete();
+            } finally {
+                statement.close();
+            }
+        } finally {
+            releaseReference();
+        }
     }
 
     /**
@@ -1622,6 +1874,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * not supported.
      * @throws SQLException if the SQL string is invalid
      */
+    @Override
     public void execSQL(String sql) throws SQLException {
         executeSql(sql, null);
     }
@@ -1669,6 +1922,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @param bindArgs only byte[], String, Long and Double are supported in bindArgs.
      * @throws SQLException if the SQL string is invalid
      */
+    @Override
     public void execSQL(String sql, Object[] bindArgs) throws SQLException {
         if (bindArgs == null) {
             throw new IllegalArgumentException("Empty bindArgs");
@@ -1679,19 +1933,6 @@ public final class SQLiteDatabase extends SQLiteClosable {
     private int executeSql(String sql, Object[] bindArgs) throws SQLException {
         acquireReference();
         try {
-            if (SQLiteStatementType.getSqlStatementType(sql) == SQLiteStatementType.STATEMENT_ATTACH) {
-                boolean disableWal = false;
-                synchronized (mLock) {
-                    if (!mHasAttachedDbsLocked) {
-                        mHasAttachedDbsLocked = true;
-                        disableWal = true;
-                    }
-                }
-                if (disableWal) {
-                    disableWriteAheadLogging();
-                }
-            }
-
             SQLiteStatement statement = new SQLiteStatement(this, sql, bindArgs);
             try {
                 return statement.executeUpdateDelete();
@@ -1704,10 +1945,26 @@ public final class SQLiteDatabase extends SQLiteClosable {
     }
 
     /**
+     * Verifies that a SQL SELECT statement is valid by compiling it.
+     * If the SQL statement is not valid, this method will throw a {@link SQLiteException}.
+     *
+     * @param sql SQL to be validated
+     * @param cancellationSignal A signal to cancel the operation in progress, or null if none.
+     * If the operation is canceled, then {@link OperationCanceledException} will be thrown
+     * when the query is executed.
+     * @throws SQLiteException if {@code sql} is invalid
+     */
+    public void validateSql(@NonNull String sql, @Nullable CancellationSignal cancellationSignal) {
+             getThreadSession().prepare(sql,
+                     getThreadDefaultConnectionFlags(true), cancellationSignal, null);
+    }
+
+    /**
      * Returns true if the database is opened as read only.
      *
      * @return True if database is opened as read only.
      */
+    @Override
     public boolean isReadOnly() {
         synchronized (mLock) {
             return isReadOnlyLocked();
@@ -1735,6 +1992,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *
      * @return True if the database is currently open (has not been closed).
      */
+    @Override
     public boolean isOpen() {
         synchronized (mLock) {
             return mConnectionPoolLocked != null;
@@ -1745,8 +2003,9 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * Returns true if the new version code is greater than the current database version.
      *
      * @param newVersion The new version code.
-     * @return True if the new version code is greater than the current database version. 
+     * @return True if the new version code is greater than the current database version.
      */
+    @Override
     public boolean needUpgrade(int newVersion) {
         return newVersion > getVersion();
     }
@@ -1756,6 +2015,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *
      * @return The path to the database file.
      */
+    @Override
     public final String getPath() {
         synchronized (mLock) {
             return mConfigurationLocked.path;
@@ -1763,8 +2023,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
     }
 
     /**
-     * Sets the locale for this database.  Does nothing if this database has
-     * the {@link #NO_LOCALIZED_COLLATORS} flag set or was opened read only.
+     * Sets the locale for this database.
      *
      * @param locale The new locale.
      *
@@ -1772,6 +2031,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * for this is that there is no collator available for the locale you requested.
      * In this case the database remains unchanged.
      */
+    @Override
     public void setLocale(Locale locale) {
         if (locale == null) {
             throw new IllegalArgumentException("locale must not be null.");
@@ -1804,6 +2064,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @param cacheSize the size of the cache. can be (0 to {@link #MAX_SQL_CACHE_SIZE})
      * @throws IllegalStateException if input cacheSize > {@link #MAX_SQL_CACHE_SIZE}.
      */
+    @Override
     public void setMaxSqlCacheSize(int cacheSize) {
         if (cacheSize > MAX_SQL_CACHE_SIZE || cacheSize < 0) {
             throw new IllegalStateException(
@@ -1853,6 +2114,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @throws IllegalStateException if the are transactions is in progress
      * when this method is called.
      */
+    @Override
     public void setForeignKeyConstraintsEnabled(boolean enable) {
         synchronized (mLock) {
             throwIfNotOpenLocked();
@@ -1945,6 +2207,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @see #ENABLE_WRITE_AHEAD_LOGGING
      * @see #disableWriteAheadLogging
      */
+    @Override
     public boolean enableWriteAheadLogging() {
         synchronized (mLock) {
             throwIfNotOpenLocked();
@@ -1961,16 +2224,6 @@ public final class SQLiteDatabase extends SQLiteClosable {
 
             if (mConfigurationLocked.isInMemoryDb()) {
                 Log.i(TAG, "can't enable WAL for memory databases.");
-                return false;
-            }
-
-            // make sure this database has NO attached databases because sqlite's write-ahead-logging
-            // doesn't work for databases with attached databases
-            if (mHasAttachedDbsLocked) {
-                if (Log.isLoggable(TAG, Log.DEBUG)) {
-                    Log.d(TAG, "this database: " + mConfigurationLocked.label
-                            + " has attached databases. can't  enable WAL.");
-                }
                 return false;
             }
 
@@ -1994,6 +2247,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      *
      * @see #enableWriteAheadLogging
      */
+    @Override
     public void disableWriteAheadLogging() {
         synchronized (mLock) {
             throwIfNotOpenLocked();
@@ -2020,6 +2274,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @see #enableWriteAheadLogging
      * @see #ENABLE_WRITE_AHEAD_LOGGING
      */
+    @Override
     public boolean isWriteAheadLoggingEnabled() {
         synchronized (mLock) {
             throwIfNotOpenLocked();
@@ -2082,25 +2337,12 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @return ArrayList of pairs of (database name, database file path) or null if the database
      * is not open.
      */
+    @Override
     public List<Pair<String, String>> getAttachedDbs() {
         ArrayList<Pair<String, String>> attachedDbs = new ArrayList<>();
         synchronized (mLock) {
             if (mConnectionPoolLocked == null) {
                 return null; // not open
-            }
-
-            if (!mHasAttachedDbsLocked) {
-                // No attached databases.
-                // There is a small window where attached databases exist but this flag is not
-                // set yet.  This can occur when this thread is in a race condition with another
-                // thread that is executing the SQL statement: "attach database <blah> as <foo>"
-                // If this thread is NOT ok with such a race condition (and thus possibly not
-                // receivethe entire list of attached databases), then the caller should ensure
-                // that no thread is executing any SQL statements while a thread is calling this
-                // method.  Typically, this method is called when 'adb bugreport' is done or the
-                // caller wants to collect stats on the database and all its attached databases.
-                attachedDbs.add(new Pair<>("main", mConfigurationLocked.path));
-                return attachedDbs;
             }
 
             acquireReference();
@@ -2143,6 +2385,7 @@ public final class SQLiteDatabase extends SQLiteClosable {
      * @return true if the given database (and all its attached databases) pass integrity_check,
      * false otherwise.
      */
+    @Override
     public boolean isDatabaseIntegrityOk() {
         acquireReference();
         try {
@@ -2204,13 +2447,56 @@ public final class SQLiteDatabase extends SQLiteClosable {
     }
 
     /**
-     * A callback interface for a custom sqlite3 function.
-     * This can be used to create a function that can be called from
-     * sqlite3 database triggers.
-     * @hide
+     * A callback interface for a custom sqlite3 function. This can be used to create a function
+     * that can be called from sqlite3 database triggers.
+     *
+     * This interface is deprecated; new code should prefer {@link Function}
      */
+    @Deprecated
     public interface CustomFunction {
-        void callback(String[] args);
+        /**
+         * Invoked whenever the function is called.
+         * @param args function arguments
+         * @return String value of the result or null
+         */
+        String callback(String[] args);
+    }
+
+    /**
+     * A callback interface for a custom sqlite3 function. This can be used to create a function
+     * that can be called from sqlite3 database triggers, or used in queries.
+     */
+    public interface Function {
+        /**
+         * Flag that declares this function to be "deterministic,"
+         *  which means it may be used with Indexes on Expressions.
+         */
+        public static final int FLAG_DETERMINISTIC = 0x800;
+
+        interface Args {
+            byte[] getBlob(int arg);
+            String getString(int arg);
+            double getDouble(int arg);
+            int getInt(int arg);
+            long getLong(int arg);
+        }
+
+        interface Result {
+            void set(byte[] value);
+            void set(double value);
+            void set(int value);
+            void set(long value);
+            void set(String value);
+            void setError(String error);
+            void setNull();
+        }
+
+        /**
+         * Invoked whenever the function is called.
+         * @param args function arguments
+         * @return String value of the result or null
+         */
+        void callback(Args args, Result result);
     }
 
     static boolean hasCodec() {
@@ -2222,11 +2508,49 @@ public final class SQLiteDatabase extends SQLiteClosable {
     }
 
     /**
+     * Query the table for the number of rows in the table.
+     * @param table the name of the table to query
+     * @return the number of rows in the table
+     */
+    public long queryNumEntries(String table) {
+        return queryNumEntries(table, null, null);
+    }
+
+    /**
+     * Query the table for the number of rows in the table.
+     * @param table the name of the table to query
+     * @param selection A filter declaring which rows to return,
+     *              formatted as an SQL WHERE clause (excluding the WHERE itself).
+     *              Passing null will count all rows for the given table
+     * @return the number of rows in the table filtered by the selection
+     */
+    public long queryNumEntries(String table, String selection) {
+        return queryNumEntries(table, selection, null);
+    }
+
+    /**
+     * Query the table for the number of rows in the table.
+     * @param table the name of the table to query
+     * @param selection A filter declaring which rows to return,
+     *              formatted as an SQL WHERE clause (excluding the WHERE itself).
+     *              Passing null will count all rows for the given table
+     * @param selectionArgs You may include ?s in selection,
+     *              which will be replaced by the values from selectionArgs,
+     *              in order that they appear in the selection.
+     *              The values will be bound as Strings.
+     * @return the number of rows in the table filtered by the selection
+     */
+    public long queryNumEntries(String table, String selection, String[] selectionArgs) {
+        String s = (!TextUtils.isEmpty(selection)) ? " where " + selection : "";
+        return longForQuery("select count(*) from " + table + s, selectionArgs);
+    }
+
+    /**
      * Utility method to run the query on the db and return the value in the
      * first column of the first row.
      */
-    private static long longForQuery(SQLiteDatabase db, String query, String[] selectionArgs) {
-        SQLiteStatement prog = db.compileStatement(query);
+    public long longForQuery(String query, String[] selectionArgs) {
+        SQLiteStatement prog = compileStatement(query);
         try {
             return longForQuery(prog, selectionArgs);
         } finally {
@@ -2241,5 +2565,54 @@ public final class SQLiteDatabase extends SQLiteClosable {
     private static long longForQuery(SQLiteStatement prog, String[] selectionArgs) {
         prog.bindAllArgsAsStrings(selectionArgs);
         return prog.simpleQueryForLong();
+    }
+
+    /**
+     * Utility method to run the query on the db and return the value in the
+     * first column of the first row.
+     */
+    public String stringForQuery(String query, String[] selectionArgs) {
+        SQLiteStatement prog = compileStatement(query);
+        try {
+            return stringForQuery(prog, selectionArgs);
+        } finally {
+            prog.close();
+        }
+    }
+
+    /**
+     * Utility method to run the pre-compiled query and return the value in the
+     * first column of the first row.
+     */
+    public static String stringForQuery(SQLiteStatement prog, String[] selectionArgs) {
+        prog.bindAllArgsAsStrings(selectionArgs);
+        return prog.simpleQueryForString();
+    }
+
+    /**
+     * Utility method to run the query on the db and return the blob value in the
+     * first column of the first row.
+     *
+     * @return A read-only file descriptor for a copy of the blob value.
+     */
+    public ParcelFileDescriptor blobFileDescriptorForQuery(String query, String[] selectionArgs) {
+        SQLiteStatement prog = compileStatement(query);
+        try {
+            return blobFileDescriptorForQuery(prog, selectionArgs);
+        } finally {
+            prog.close();
+        }
+    }
+
+    /**
+     * Utility method to run the pre-compiled query and return the blob value in the
+     * first column of the first row.
+     *
+     * @return A read-only file descriptor for a copy of the blob value.
+     */
+    public static ParcelFileDescriptor blobFileDescriptorForQuery(SQLiteStatement prog,
+                                                                  String[] selectionArgs) {
+        prog.bindAllArgsAsStrings(selectionArgs);
+        return prog.simpleQueryForBlobFileDescriptor();
     }
 }

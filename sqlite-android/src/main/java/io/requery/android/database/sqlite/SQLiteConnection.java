@@ -30,11 +30,11 @@ import android.database.sqlite.SQLiteException;
 import android.os.Build;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
-import android.support.v4.os.CancellationSignal;
-import android.support.v4.os.OperationCanceledException;
-import android.support.v4.util.LruCache;
 import android.util.Log;
 import android.util.Printer;
+import androidx.collection.LruCache;
+import androidx.core.os.CancellationSignal;
+import androidx.core.os.OperationCanceledException;
 import io.requery.android.database.CursorWindow;
 
 import java.text.SimpleDateFormat;
@@ -130,6 +130,8 @@ public final class SQLiteConnection implements CancellationSignal.OnCancelListen
     private static native void nativeClose(long connectionPtr);
     private static native void nativeRegisterCustomFunction(long connectionPtr,
             SQLiteCustomFunction function);
+    private static native void nativeRegisterFunction(long connectionPtr,
+        SQLiteFunction function);
     private static native void nativeRegisterLocalizedCollators(long connectionPtr, String locale);
     private static native long nativePrepareStatement(long connectionPtr, String sql);
     private static native void nativeFinalizeStatement(long connectionPtr, long statementPtr);
@@ -167,6 +169,8 @@ public final class SQLiteConnection implements CancellationSignal.OnCancelListen
 
     private static native boolean nativeHasCodec();
     private static native void nativeLoadExtension(long connectionPtr, String file, String proc);
+
+    private static native void nativeRegisterUpdateHook(long connectionPtr, SQLiteUpdateHook updateCallback);
 
     public static boolean hasCodec(){ return nativeHasCodec(); }
 
@@ -220,7 +224,9 @@ public final class SQLiteConnection implements CancellationSignal.OnCancelListen
     }
 
     private void open() {
-        mConnectionPtr = nativeOpen(mConfiguration.path, mConfiguration.openFlags,
+        mConnectionPtr = nativeOpen(mConfiguration.path,
+                // remove the wal flag as its a custom flag not supported by sqlite3_open_v2
+                mConfiguration.openFlags & ~SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING,
                 mConfiguration.label,
                 SQLiteDebug.DEBUG_SQL_STATEMENTS, SQLiteDebug.DEBUG_SQL_TIME);
 
@@ -233,16 +239,29 @@ public final class SQLiteConnection implements CancellationSignal.OnCancelListen
             setLocaleFromConfiguration();
         }
 
-        // Register custom functions.
-        final int functionCount = mConfiguration.customFunctions.size();
-        for (int i = 0; i < functionCount; i++) {
+        // Register (deprecated) custom functions.
+        final int customFunctionCount = mConfiguration.customFunctions.size();
+        for (int i = 0; i < customFunctionCount; i++) {
             SQLiteCustomFunction function = mConfiguration.customFunctions.get(i);
             nativeRegisterCustomFunction(mConnectionPtr, function);
+        }
+
+        // Register functions
+        final int functionCount = mConfiguration.functions.size();
+        for (int i = 0; i < functionCount; i++) {
+            SQLiteFunction function = mConfiguration.functions.get(i);
+            nativeRegisterFunction(mConnectionPtr, function);
         }
 
         // Register custom extensions
         for (SQLiteCustomExtension extension : mConfiguration.customExtensions) {
             nativeLoadExtension(mConnectionPtr, extension.path, extension.entryPoint);
+        }
+
+        final SQLiteUpdateHook sqliteUpdateHook = mConfiguration.sqliteUpdateHook;
+
+        if (sqliteUpdateHook != null) {
+            nativeRegisterUpdateHook(mConnectionPtr, sqliteUpdateHook);
         }
     }
 
@@ -378,10 +397,6 @@ public final class SQLiteConnection implements CancellationSignal.OnCancelListen
     }
 
     private void setLocaleFromConfiguration() {
-        if ((mConfiguration.openFlags & SQLiteDatabase.NO_LOCALIZED_COLLATORS) != 0) {
-            return;
-        }
-
         // Register the localized collators.
         final String newLocale = mConfiguration.locale.toString();
         nativeRegisterLocalizedCollators(mConnectionPtr, newLocale);
@@ -431,13 +446,27 @@ public final class SQLiteConnection implements CancellationSignal.OnCancelListen
     void reconfigure(SQLiteDatabaseConfiguration configuration) {
         mOnlyAllowReadOnlyOperations = false;
 
-        // Register custom functions.
-        final int functionCount = configuration.customFunctions.size();
-        for (int i = 0; i < functionCount; i++) {
+        // Register (deprecated) custom functions.
+        final int customFunctionCount = configuration.customFunctions.size();
+        for (int i = 0; i < customFunctionCount; i++) {
             SQLiteCustomFunction function = configuration.customFunctions.get(i);
             if (!mConfiguration.customFunctions.contains(function)) {
                 nativeRegisterCustomFunction(mConnectionPtr, function);
             }
+        }
+
+        // Register Functions
+        final int functionCount = configuration.functions.size();
+        for (int i = 0; i < functionCount; i++) {
+            SQLiteFunction function = configuration.functions.get(i);
+            if (!mConfiguration.functions.contains(function)) {
+                nativeRegisterFunction(mConnectionPtr, function);
+            }
+        }
+
+        final SQLiteUpdateHook updateHook = configuration.sqliteUpdateHook;
+        if (updateHook != null) {
+            nativeRegisterUpdateHook(mConnectionPtr, updateHook);
         }
 
         // Remember what changed.

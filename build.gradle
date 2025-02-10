@@ -1,21 +1,4 @@
-apply plugin: 'java'
-
-buildscript {
-    repositories {
-        jcenter()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:2.1.2'
-        classpath 'com.jfrog.bintray.gradle:gradle-bintray-plugin:1.7'
-    }
-}
-
-allprojects {
-    repositories {
-        jcenter()
-    }
-}
-
-task clean(type: Delete) {
-    delete rootProject.buildDir
+plugins {
+    id "com.android.library" version "8.2.1" apply false
+    id "de.undercouch.download" version "5.5.0" apply false
 }
